@@ -2,41 +2,8 @@ module Main where
 
 import System.Random
 import Control.Lens
+import Control.Monad.State.Lazy
 
------------------------
--- State Transformer --
------------------------
-
-data StateT state value = StateT (state -> (value, state))
-
-sTransform :: StateT s v -> s -> (v , s)
-sTransform (StateT tf) s = tf s
-
-
-instance Functor (StateT s) where
-
-  fmap g st = StateT newTFunction
-    where
-      newTFunction state = (g value , state')
-        where (value, state') = sTransform st state
-
-instance Applicative (StateT s) where
-  pure v = StateT (\s -> (v, s))
-
-  stf <*> stb = StateT concatTransform
-    where
-      concatTransform s = ( f x , s'' )
-          where
-            (f , s' ) = sTransform stf s
-            (x , s'') = sTransform stb s'
-
-
-instance Monad (StateT s) where
-  return = pure
-
-  st >>= gt = StateT newTFunction
-    where newTFunction s = sTransform (gt x) s'
-            where (x , s') = sTransform st s
 ----------------
 --Knapsack -----
 ----------------
@@ -84,20 +51,30 @@ createNeighbor sol gen = (neighbor, gen')
     (pos, gen') = randomR (0::Int, ((length sol) - 1)::Int) gen
     neighbor = if sol!!pos == 1 then sol & element pos.~0 else sol & element pos.~1
 
+type NeighborState = (Solution, StdGen)
+
+createNeighborState :: NeighborState -> (Solution, NeighborState)
+createNeighborState (sol , gen) = (neighbor , (neighbor, gen'))
+  where
+    (pos, gen') = randomR (0::Int, ((length sol) - 1)::Int) gen
+    neighbor = if sol!!pos == 1 then sol & element pos.~0 else sol & element pos.~1
+
+-- cria mais um estado , WIP
+createNeighborT :: StateT NeighborState Identity Solution
+createNeighborT = state createNeighborState
 -----------------------
 --Simulated Annealing--
 -----------------------
 
-type Config      = ( Int, Int , Temperature, TempChange )
+type Config      = ( Int , Temperature, TempChange )
 type Temperature = Double
 type TempChange  = Double
 type SearchState = ( Temperature, TempChange , StdGen, Solution )
 
 choose :: Solution -> Solution -> StdGen -> Temperature -> (Solution , StdGen)
-choose csol candidate gen t =
-  if (cNew) > (cOld)
-  then (candidate , gen)
-  else ( csol', gen' )
+choose csol candidate gen t
+  | (cNew) > (cOld) = (candidate , gen)
+  | otherwise = ( csol', gen' )
     where
       cNew = fromIntegral $ cost' candidate
       cOld = fromIntegral $ cost' csol
@@ -111,16 +88,16 @@ searchStep ( t , dt , gen , csol ) = ( csol' , ( t' , dt , gen'' , csol' ) )
     (candidate , gen') = createNeighbor csol gen
     (csol', gen'') = choose csol candidate gen' t
 
-searchStepT :: StateT SearchState Solution
-searchStepT = StateT searchStep
+searchStepT :: StateT SearchState Identity Solution
+searchStepT = state searchStep
 
-search :: Config -> Solution -> Solution
-search (step , seed, iTemp, tChange) initSol = last sol
+search :: Config -> Solution -> [Solution]
+search (seed, iTemp, tChange) initSol =  sol
   where
     initState = (iTemp , tChange , mkStdGen seed , initSol)
-    listT  = mapM (const searchStepT) [1..step]
-    (sol, _) = sTransform listT initState
+    listT  = mapM (const searchStepT) [1..]
+    sol = evalState listT initState
 
 
 main :: IO ()
-main = do putStrLn "hello world"
+main = putStrLn "hello world"
