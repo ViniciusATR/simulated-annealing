@@ -10,6 +10,7 @@ import Control.Monad.State.Lazy
 
 type Solution = [Integer]
 type SearchSpace = [(Integer, Integer)]
+type Cost = SearchSpace -> Solution -> Integer
 
 -- (peso,valor)
 test_data = [(23, 92),
@@ -42,62 +43,76 @@ cost elems sol = if p > max_capacity then v - (p - max_capacity) else v
   where
     (p, v) = packSum elems sol
 
--- Como injetar a funça de custo e outras sem poluir e aumentar o estado ?
-cost' = cost test_data
+randomRT inf sup = state $ randomR (inf , sup)
 
-createNeighbor :: Solution -> StdGen -> (Solution , StdGen)
-createNeighbor sol gen = (neighbor, gen')
-  where
-    (pos, gen') = randomR (0::Int, ((length sol) - 1)::Int) gen
-    neighbor = if sol!!pos == 1 then sol & element pos.~0 else sol & element pos.~1
+flipBit :: Solution -> Int -> Solution
+flipBit sol pos = if sol!!pos == 1 then sol & element pos.~0 else sol & element pos.~1
 
-type NeighborState = (Solution, StdGen)
+neighbor :: Solution -> State StdGen Solution
+neighbor s = do
+  id <- randomRT (0::Int) (((length s) - 1)::Int)
+  return $ flipBit s id
 
-createNeighborState :: NeighborState -> (Solution, NeighborState)
-createNeighborState (sol , gen) = (neighbor , (neighbor, gen'))
-  where
-    (pos, gen') = randomR (0::Int, ((length sol) - 1)::Int) gen
-    neighbor = if sol!!pos == 1 then sol & element pos.~0 else sol & element pos.~1
-
--- cria mais um estado , WIP
-createNeighborT :: StateT NeighborState Identity Solution
-createNeighborT = state createNeighborState
 -----------------------
 --Simulated Annealing--
 -----------------------
 
-type Config      = ( Int , Temperature, TempChange )
+type Config      = ( Int , Temperature, Delta )
 type Temperature = Double
-type TempChange  = Double
-type SearchState = ( Temperature, TempChange , StdGen, Solution )
+type Delta  = Double
+type SearchState = ( Temperature, Delta , StdGen, Solution )
 
-choose :: Solution -> Solution -> StdGen -> Temperature -> (Solution , StdGen)
-choose csol candidate gen t
-  | (cNew) > (cOld) = (candidate , gen)
-  | otherwise = ( csol', gen' )
-    where
-      cNew = fromIntegral $ cost' candidate
-      cOld = fromIntegral $ cost' csol
-      (rand , gen') = randomR (0.0::Double , 1.0::Double) gen
-      csol' = if ((exp (cOld - cNew) / t)) > rand then candidate else csol
+type Chooser = Temperature -> Solution -> Solution -> State StdGen Solution
+type TempChanger = Temperature -> Temperature
+type NeighborGen = Solution -> State StdGen Solution
 
-searchStep :: SearchState -> (Solution , SearchState)
-searchStep ( t , dt , gen , csol ) = ( csol' , ( t' , dt , gen'' , csol' ) )
+updateTemp :: Delta -> Temperature -> Temperature
+updateTemp d t = t * d
+
+createChooser :: Cost -> SearchSpace -> Chooser
+createChooser cost ss = chooseM
   where
-    t'= t * dt
-    (candidate , gen') = createNeighbor csol gen
-    (csol', gen'') = choose csol candidate gen' t
+    cost' = cost ss
+    chooseM :: Chooser
+    chooseM t so1 so2 | (cNew) > (cOld) = return so2
+                      | otherwise = do
+                                      rand <- randomRT 0.0 1.0
+                                      let acceptProba = exp $ (cOld - cNew) / t
+                                      return $ if acceptProba > rand then so2 else so1
+                        where
+                            cNew = fromIntegral $ cost' so2
+                            cOld = fromIntegral $ cost' so1
 
-searchStepT :: StateT SearchState Identity Solution
-searchStepT = state searchStep
-
-search :: Config -> Solution -> [Solution]
-search (seed, iTemp, tChange) initSol =  sol
+sa :: TempChanger -> Chooser -> NeighborGen -> Temperature -> Solution -> Int -> State StdGen Solution
+sa tc ch ng t0 s0 steps = sa' t0 s0 steps
   where
-    initState = (iTemp , tChange , mkStdGen seed , initSol)
-    listT  = mapM (const searchStepT) [1..]
-    sol = evalState listT initState
+  sa' :: Temperature -> Solution -> Int -> State StdGen Solution
+  sa' t s 0     = return s
+  sa' t s steps = do n <- ng s
+                     s'<- ch t s n
+                     sa' ( tc t ) s' (steps - 1)
+
+-- EXEMPLO DE USO
+--
+-- updateTempSample :: TempChanger
+-- updateTempSample = updateTemp 0.9
+-- chooser = createChooser cost test_data
+--
+-- sample = sa updateTempSample chooser neighbor
+-- initsol = [1,0,1,0,1,0,1,0,1,0]
+-- tmp  = 80
+-- stps = 40
+-- gen  = mkStdGen 30
+
+-- final = evalState (sample tmp initsol stps) gen
 
 
 main :: IO ()
-main = putStrLn "hello world"
+main = do let updateTempSample = updateTemp 0.9
+          let chooser = createChooser cost test_data
+          let sample = sa updateTempSample chooser neighbor
+          let initsol = [1,0,1,0,1,0,1,0,1,0]
+          let tmp = 80
+          let stps = 40
+          let gen = mkStdGen 30
+          print $ evalState (sample tmp initsol stps) gen
